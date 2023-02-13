@@ -1,0 +1,223 @@
+---
+title: "STA2201 Lab5"
+author: "Ichiro Hashimoto"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(rstan)
+library(tidybayes)
+library(here)
+```
+
+## Question 1
+
+Use plots or tables to show three interesting observations about the data. Remember:
+
+- Explain what your graph/ tables show
+- Choose a graph type that's appropriate to the data type
+
+## Answer
+
+The following plot indicates not only that there are linear relation between child's IQ score and mother's IQ score but also indicates that the distribution seems different for child's IQ score whose mother with a high school degree and whose mother without a high school.
+
+```{r echo=FALSE}
+kidiq <- read_rds(here("kidiq.RDS"))
+```
+
+```{r echo=FALSE}
+kidiq$mom_hs <- as.factor(kidiq$mom_hs)
+kidiq |>
+  ggplot(aes(x=mom_iq, y=kid_score, color = mom_hs))+
+  geom_point()+
+  ggtitle("Child's IQ score by Mother's IQ score")
+```
+
+From the following boxplot, we can further confirm that child's IQ score is distributed higher if their mother has a high school degree.
+
+```{r echo=FALSE}
+kidiq|>
+  ggplot(aes(x= mom_hs, y=kid_score))+
+  geom_boxplot()+
+  ggtitle("Child's IQ score by Mother's Education Level")
+```
+
+At the same time, the following boxplot also indicated that mother's IQ score is higher if she has a high school degree.
+
+```{r echo=FALSE}
+kidiq|>
+  ggplot(aes(x = mom_hs, y=mom_iq))+
+  geom_boxplot()+
+  ggtitle("Mother's IQ score by Mother's Education Level")
+```
+
+## Question 2
+
+Change the prior to be much more informative (by changing the standard deviation to be 0.1). Rerun the model. Do the estimates change? Plot the prior and posterior densities. 
+
+## Answer
+
+```{r echo=FALSE, include=FALSE}
+y <- kidiq$kid_score
+mu0 <- 80
+sigma0 <- 0.1
+
+# named list to input for stan function
+data2 <- list(y = y, 
+             N = length(y), 
+             mu0 = mu0,
+             sigma0 = sigma0)
+
+fit <- stan(file = here("kids2.stan"),
+            data = data2,
+            chains = 3,
+            iter = 500)
+```
+
+From the following summary of the new model, we can see that the estimate of 'mu' has changed quite a bit. As expected, it was pulled to the prior information (mu = 80).
+
+```{r echo=FALSE}
+fit
+```
+
+The prior and posterior densities are plotted as follows:
+```{r echo=FALSE}
+dsamples <- fit  |> 
+  gather_draws(mu, sigma) # gather = long format
+
+dsamples |> 
+  filter(.variable == "mu") |> 
+  ggplot(aes(.value, color = "posterior")) + geom_density(size = 1) + 
+  xlim(c(70, 100)) + 
+  stat_function(fun = dnorm, 
+        args = list(mean = mu0, 
+                    sd = sigma0), 
+        aes(colour = 'prior'), size = 1) +
+  scale_color_manual(name = "", values = c("prior" = "red", "posterior" = "black")) + 
+  ggtitle("Prior and posterior for mean test scores") + 
+  xlab("score")
+  
+```
+
+
+## Question 3
+
+a) Confirm that the estimates of the intercept and slope are comparable to results from `lm()` 
+
+## Answer
+
+```{r echo=FALSE, include=FALSE}
+kidiq$mom_hs <- as.integer(kidiq$mom_hs)
+X <- as.matrix(kidiq$mom_hs, ncol = 1) # force this to be a matrix
+K <- 1
+
+data <- list(y = y, N = length(y), 
+             X =X, K = K)
+fit2 <- stan(file = here("kids3.stan"),
+            data = data, 
+            iter = 1000)
+```
+
+Here are the summary of the new model where `mom_hs` was added as a covariate:
+```{r echo=FALSE}
+fit2
+```
+
+In addition, the following is a summary from a simple linear regression. Comparing estimates from these two models, we can confirm that both give similar estimates.
+```{r echo=FALSE}
+mod <- lm(kid_score ~ mom_hs, data = kidiq)
+summary(mod)
+```
+
+b) Do a `pairs` plot to investigate the joint sample distributions of the slope and intercept. Comment briefly on what you see. Is this potentially a problem?
+
+## Answer
+
+From the joint sample distributions of the slope and intercept, we find that they have a clear linear relation where they should be independently distributed. This is because we did not do centering.
+
+```{r echo=FALSE}
+pairs(fit2, pars = c("alpha", "beta"))
+```
+
+## Question 4
+
+Add in mother's IQ as a covariate and rerun the model. Please  mean center the covariate before putting it into the model. Interpret the coefficient on the (centered) mum's IQ. 
+
+## Answer
+
+```{r echo=FALSE, include=FALSE}
+d <- kidiq|>
+  select(mom_hs, mom_iq)
+d$mom_iq <- d$mom_iq - mean(d$mom_iq)
+X2 <- data.matrix(d) # force this to be a matrix
+K <- 2
+
+data2 <- list(y = y, N = length(y), 
+             X =X2, K = K)
+fit3 <- stan(file = here("kids3.stan"),
+            data = data2, 
+            iter = 1000)
+```
+
+The following is the summary of the new model. The estimate indicates that if mum's IQ increase by 1, child's IQ also increases by 0.56.
+```{r echo=FALSE}
+fit3
+```
+
+## Question 5 
+
+Confirm the results from Stan agree with `lm()`
+
+## Answer
+
+The following summary from 'lm()' indicates that the results from Stan is similar to this one.
+```{r echo=FALSE}
+kidiq2 <- kidiq
+kidiq2$mom_iq <- kidiq2$mom_iq - mean(kidiq2$mom_iq)
+mod2 <- lm(kid_score ~ mom_hs + mom_iq, data = kidiq2)
+summary(mod2)
+```
+
+\pagebreak
+## Question 6
+
+Plot the posterior estimates of scores by education of mother for mothers who have an IQ of 110. 
+
+## Answer
+
+```{r echo=FALSE}
+fit3 |>
+  spread_draws(alpha, beta[k], sigma) |>
+  pivot_wider(names_from = "k", values_from = "beta")|>
+  rename(beta1 = "1", beta2 = "2")|>
+  mutate(nhs = alpha + beta2*(110-mean(kidiq$mom_iq)), hs = alpha + beta1 + beta2*(110-mean(kidiq$mom_iq)))|>
+  select(nhs, hs) |> 
+  pivot_longer(nhs:hs, names_to = "education", values_to = "estimated_score") |> 
+  ggplot(aes(y = education, x = estimated_score)) +
+  stat_halfeye() + 
+  theme_bw() + 
+  ggtitle("Posterior estimates of scores by education level of mother who have an IQ of 110")
+```
+
+\pagebreak
+## Question 7
+
+Generate and plot (as a histogram) samples from the posterior predictive distribution for a new kid with a mother who graduated high school and has an IQ of 95. 
+
+## Answer
+
+```{r echo=FALSE}
+post_samples <- extract(fit3)
+alpha <- post_samples[["alpha"]]
+beta1 <- post_samples[["beta"]][, 1]
+beta2 <- post_samples[["beta"]][, 2]
+
+x_new = 95
+lin_pred <- alpha + beta1 + beta2*(x_new-mean(kidiq$mom_iq))
+hist(lin_pred)
+```
