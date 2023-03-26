@@ -1,0 +1,369 @@
+---
+title: "Week 10: Temporal data"
+date: today
+date-format: "DD/MM/YY"
+format: pdf
+execute: 
+  warning: false
+  message: false
+---
+
+# Child mortality in Sri Lanka
+
+In this lab you will be fitting a couple of different models to the data about child mortality in Sri Lanka, which was used in the lecture. Here's the data and the plot from the lecture:
+
+```{r echo=FALSE}
+library(tidyverse)
+library(here)
+library(rstan)
+library(tidybayes)
+
+lka <- read_csv(here("lka.csv"))
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se,
+                  ymax = logit_ratio + se,
+                  fill =  source), alpha = 0.1) +
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka", y = "log ratio")
+```
+
+# Fitting a linear model 
+
+Let's firstly fit a linear model in time to these data. Here's the code to do this:
+
+```{r echo=FALSE}
+observed_years <- lka$year
+years <- min(observed_years):max(observed_years)
+nyears <- length(years)
+
+stan_data <- list(y = lka$logit_ratio, year_i = observed_years - years[1]+1, 
+                  T = nyears, years = years, N = length(observed_years), 
+                  mid_year = mean(years), se = lka$se)
+
+mod <- stan(data = stan_data,
+            file = here("lka_linear_me.stan"),
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+Extract the results:
+
+```{r}
+res <- mod %>% 
+  gather_draws(mu[t]) %>% 
+  median_qi() %>% 
+  mutate(year = years[t])
+```
+
+
+Plot the results:
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res, aes(year, .value)) + 
+  geom_ribbon(data = res, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2)+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Linear fit shown in black")
+```
+
+## Question 1
+
+Project the linear model above out to 2023 by adding a `generated quantities` block in Stan (do the projections based on the expected value $\mu$). Plot the resulting projections on a graph similar to that above. 
+
+```{r echo=FALSE}
+stan_data <- list(y = lka$logit_ratio, year_i = observed_years - years[1]+1, 
+                  T = nyears, years = years, N = length(observed_years), 
+                  mid_year = mean(years), se = lka$se, P=9)
+
+mod2 <- stan(data = stan_data,
+             file = here("lab10_1.stan"),
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+```{r echo=FALSE}
+res2 <- mod2 %>% 
+  gather_draws(mu[t]) %>% 
+  median_qi() %>% 
+  mutate(year = years[t])
+
+res_p2 <- mod2|>
+  gather_draws(mu_p[p])|>
+  median_qi()|>
+  mutate(year = years[nyears]+p)
+```
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res2, aes(year, .value)) + 
+  geom_ribbon(data = res2, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2)+
+  geom_line(data = res_p2, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p2, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Linear fit shown in black, Projection shown in red")
+```
+
+# Random walks
+
+
+## Question 2
+
+Code up and estimate a first order random walk model to fit to the Sri Lankan data, taking into account measurement error, and project out to 2023. 
+
+```{r echo=FALSE}
+mod3 <- stan(data = stan_data,
+             file = here("lab10_2.stan"),
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+```{r echo=FALSE}
+res3 <- mod3 %>% 
+  gather_draws(mu[t]) %>% 
+  median_qi() %>% 
+  mutate(year = years[t])
+
+res_p3 <- mod3|>
+  gather_draws(mu_p[p])|>
+  median_qi()|>
+  mutate(year = years[nyears]+p)
+```
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res3, aes(year, .value)) + 
+  geom_ribbon(data = res3, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2)+
+  geom_line(data = res_p3, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p3, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "First order random walk fit shown in black, projection in red")
+```
+
+
+## Question 3
+
+Now alter your model above to estimate and project a second-order random walk model (RW2). 
+
+```{r echo=FALSE}
+mod4 <- stan(data = stan_data,
+             file = here("lab10_3.stan"),
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+```{r echo=FALSE}
+res4 <- mod4 %>% 
+  gather_draws(mu[t]) %>% 
+  median_qi() %>% 
+  mutate(year = years[t])
+
+res_p4 <- mod4|>
+  gather_draws(mu_p[p])|>
+  median_qi()|>
+  mutate(year = years[nyears]+p)
+```
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res4, aes(year, .value)) + 
+  geom_ribbon(data = res4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2)+
+  geom_line(data = res_p4, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Second order random walk fit shown in black, Projection in red")
+```
+
+## Question 4
+
+Run the first order and second order random walk models, including projections out to 2023. Compare these estimates with the linear fit by plotting everything on the same graph. 
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res2, aes(year, .value)) + 
+  geom_ribbon(data = res2, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "black")+
+  geom_line(data = res_p2, aes(year, .value)) + 
+  geom_ribbon(data = res_p2, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "black")+
+  geom_line(data = res3, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res3, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  geom_line(data = res_p3, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p3, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  geom_line(data = res4, aes(year, .value), col = "blue") + 
+  geom_ribbon(data = res4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "blue")+
+  geom_line(data = res_p4, aes(year, .value), col = "blue") + 
+  geom_ribbon(data = res_p4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "blue")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Linear fit shown in black, First order random walk in red, Second order random walk in blue")
+```
+
+The following only plots point estimates.
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res2, aes(year, .value)) + 
+  geom_line(data = res_p2, aes(year, .value)) + 
+  geom_line(data = res3, aes(year, .value), col = "red") + 
+  geom_line(data = res_p3, aes(year, .value), col = "red") + 
+  geom_line(data = res4, aes(year, .value), col = "blue") + 
+  geom_line(data = res_p4, aes(year, .value), col = "blue") + 
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Linear fit shown in black, First order random walk in red, Second order random walk in blue")
+```
+
+
+## Question 5
+
+Rerun the RW2 model excluding the VR data. Briefly comment on the differences between the two data situations. 
+
+```{r echo=FALSE}
+lka2 <- lka|>
+  filter(source!="VR")
+
+observed_years2 <- lka2$year
+years2 <- min(observed_years2):max(observed_years2)
+nyears2 <- length(years2)
+```
+
+
+```{r echo=FALSE}
+stan_data2 <- list(y = lka2$logit_ratio, year_i = observed_years2 - years2[1]+1, 
+                  T = nyears2, years = years2, N = length(observed_years2), 
+                  mid_year = mean(years2), se = lka2$se, P=18)
+
+mod5 <- stan(data = stan_data2,
+             file = here("lab10_3.stan"),
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+
+```{r echo=FALSE}
+res5 <- mod5 %>% 
+  gather_draws(mu[t]) %>% 
+  median_qi() %>% 
+  mutate(year = years2[t])
+
+res_p5 <- mod5|>
+  gather_draws(mu_p[p])|>
+  median_qi()|>
+  mutate(year = years2[nyears2]+p)
+```
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res5, aes(year, .value)) + 
+  geom_ribbon(data = res5, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2)+
+  geom_line(data = res_p5, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p5, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Second order random walk fit in black, Projection in red")
+```
+
+## Question 6
+
+Briefly comment on which model you think is most appropriate, or an alternative model that would be more appropriate in this context. 
+
+## Answer
+
+The linear model is not appropriate since it does not capture the downward trend observed in the latest observations. 
+
+The first order random walk seems to be over-fitted to the data (fitted curve is less smooth) and the projection does not capture the downward trend either.
+
+Now we compare the two second order random walk models. Let's put these two second order random walk models into one graph to compare.
+
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res4, aes(year, .value), col = "blue") + 
+  geom_ribbon(data = res4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "blue")+
+  geom_line(data = res_p4, aes(year, .value), col = "blue") + 
+  geom_ribbon(data = res_p4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "blue")+
+  geom_line(data = res5, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res5, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  geom_line(data = res_p5, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res_p5, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Model with VR in blue, without VR in red")
+```
+
+The following graph only shows fits, i.e. projections removed:
+```{r echo=FALSE}
+ggplot(lka, aes(year, logit_ratio)) +
+  geom_point(aes( color = source)) + 
+  geom_line(aes( color = source), lty = 2) + 
+  geom_ribbon(aes(ymin = logit_ratio - se, 
+                  ymax = logit_ratio + se, 
+                  fill =  source), alpha = 0.1) + 
+  theme_bw()+
+  geom_line(data = res4, aes(year, .value), col = "blue") + 
+  geom_ribbon(data = res4, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "blue")+
+  geom_line(data = res5, aes(year, .value), col = "red") + 
+  geom_ribbon(data = res5, aes(y = .value, ymin = .lower, ymax = .upper), alpha = 0.2, fill = "red")+
+  theme_bw()+
+  labs(title = "Ratio of neonatal to other child mortality (logged), Sri Lanka",
+       y = "log ratio", subtitle = "Model with VR in blue, without VR in red")
+```
+
+We consider the second walk random walk without VR is most appropriate for two reasons. First, the projection is narrower than that with VR data. Second, point estimates looks much smoother than with VR data. 
+
+It seems that the difference between these two comes from overfitting to the data with VR. Because the first model tries to fit all observations including the VR data, we observed wider variance in the projection as a trade off for it.
