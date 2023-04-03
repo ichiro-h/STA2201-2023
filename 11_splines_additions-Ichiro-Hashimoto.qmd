@@ -1,0 +1,265 @@
+---
+title: "Week 11: Splines"
+date: today
+date-format: "DD/MM/YY"
+format: pdf
+execute: 
+  warning: false
+  message: false
+---
+
+# Overview
+
+In this lab you'll be fitting a second-order P-Splines regression model to foster care entries by state in the US, projecting out to 2030. 
+
+```{r echo=FALSE}
+library(tidyverse)
+library(here)
+library(rstan)
+library(tidybayes)
+source(here("getsplines.R"))
+```
+
+Here's the data
+
+```{r echo=FALSE}
+d <- read_csv(here("fc_entries.csv"))
+```
+
+## Question 1
+
+Make a plot highlighting trends over time by state. Might be a good opportunity to use `geofacet`. Describe what you see in a couple of sentences. 
+
+
+```{r echo=FALSE}
+library(geofacet)
+
+d |> 
+  ggplot(aes(year, ent_pc)) + 
+  geom_line()+
+  theme_bw() +
+  facet_geo(~state)+
+  theme(strip.text.x = element_text(size = 6))+
+  theme(axis.text=element_text(size = 6))
+```
+
+From the plot above, the scale of changes are quite different, i.e. while some states (such as Most, West Virginia) observed significant change in the proportion of foster care entries, the change is small for most states.
+
+To see the change more visible for each states, the following plot gives one with the scale adjusted for each state. From this plot, you can see the trend of the proportion of foster care entries over time varies a lot from state to state. You see some states observed the increase while others decreased or going up and down, etc. 
+
+```{r echo=FALSE}
+d |> 
+  ggplot(aes(year, ent_pc)) + 
+  geom_line()+
+  theme_bw() +
+  facet_geo(~state, scales = "free_y")+
+  theme(strip.text.x = element_text(size = 5))+
+  theme(axis.text=element_text(size = 5))
+```
+
+## Question 2
+
+Fit a hierarchical second-order P-Splines regression model to estimate the (logged) entries per capita over the period 2010-2017. The model you want to fit is
+
+$$
+\begin{aligned}
+y_{st} &\sim N(\log \lambda_{st}, \sigma^2_{y,s})\\
+\log \lambda_{st} &= \alpha_kB_k(t)\\
+\Delta^2\alpha_k &\sim N(0, \sigma^2_{\alpha,s})\\
+\log \sigma_{\alpha,s} &\sim N(\mu_{\sigma}, \tau^2)
+\end{aligned}
+$$
+Where $y_{s,t}$ is the logged entries per capita for state $s$ in year $t$. Use cubic splines that have knots 2.5 years apart and are a constant shape at the boundaries. Put standard normal priors on standard deviations and hyperparameters. 
+
+
+```{r echo=FALSE}
+years <- unique(d$year)
+N <- length(years)
+y <- log(d |> 
+  select(state, year, ent_pc) |> 
+  pivot_wider(names_from = "state", values_from = "ent_pc") |> 
+  select(-year) |> 
+  as.matrix())
+
+res <- getsplines(years, 2.5)
+B <- res$B.ik
+K <- ncol(B)
+
+stan_data <- list(N = N, y = y, K = K, S = length(unique(d$state)),
+                  B = B)
+
+mod <- stan(data = stan_data, 
+            file = "lab11.stan", 
+            verbose = FALSE,
+            refresh = 0,
+            seed = 124)
+```
+
+
+## Question 3
+
+Project forward entries per capita to 2030. Pick 4 states and plot the results (with 95% CIs). Note the code to do this in R is in the lecture slides. 
+
+```{r echo=FALSE}
+states <- unique(d$state)
+proj_years <- 2018:2030
+# Note: B.ik are splines for in-sample period
+# has dimensions i (number of years) x k (number of knots)
+# need splines for whole period
+
+B.ik_full <- getsplines(c(years, proj_years), 2.5)$B.ik
+K_full <- ncol(B.ik_full) # number of knots over entire period
+
+proj_steps <- K_full - K # number of projection steps
+
+# get your posterior samples
+alphas <- extract(mod)[["alpha"]]
+sigmas <- extract(mod)[["sigma_alpha"]] # sigma_alpha
+sigma_ys <- extract(mod)[["sigma_y"]]
+nsims <- nrow(alphas)
+```
+
+
+```{r echo=FALSE}
+# first, project the alphas
+alphas_proj <- array(NA, c(nsims, proj_steps, length(states)))
+
+set.seed(1098)
+
+# project the alphas
+for(j in 1:length(states)){
+  first_next_alpha <- rnorm(n = nsims,
+                            mean = 2 * alphas[, K, j] - alphas[, K - 1, j],
+                            sd = sigmas[,j])
+  second_next_alpha <- rnorm(n = nsims,
+                           mean = 2*first_next_alpha - alphas[,K,j],
+                           sd = sigmas[,j])
+  
+  alphas_proj[,1,j] <- first_next_alpha
+  
+  alphas_proj[,2,j] <- second_next_alpha
+
+# now project the rest
+for(i in 3:proj_steps){ #!!! not over years but over knots
+  alphas_proj[,i,j] <- rnorm(n = nsims,
+                           mean = 2*alphas_proj[,i-1,j] - alphas_proj[,i-2,j],
+                           sd = sigmas[,j])
+  }
+}
+
+# now use these to get ys
+y_proj <- array(NA, c(nsims, length(proj_years), length(states)))
+for(i in 1:length(proj_years)){ # now over years
+  for(j in 1:length(states)){
+    all_alphas <- cbind(alphas[,,j], alphas_proj[,,j] )
+    this_lambda <- all_alphas %*% as.matrix(B.ik_full[length(years)+i, ])
+    y_proj[,i,j] <- rnorm(n = nsims, mean = this_lambda, sd = sigma_ys[,j])
+    }
+}
+```
+
+```{r echo=FALSE}
+# then proceed as normal to get median, quantiles etc
+proj_quantiles <- array(NA, c(3, length(proj_years), length(states)))
+for(i in 1:length(proj_years)){
+  for(j in 1:length(states)){
+proj_quantiles[, i, j] <- quantile(exp(y_proj[, i, j]), probs = c(0.025, 0.5, 0.975))
+  }
+} 
+
+d1 <- data.frame(year = proj_years)
+d1$state = states[5]
+d1$lower = proj_quantiles[1, , 5]
+d1$ent_pc = proj_quantiles[2, , 5]
+d1$upper = proj_quantiles[3, , 5]
+
+d2 <- data.frame(year = proj_years)
+d2$state = states[25]
+d2$lower = proj_quantiles[1, , 25]
+d2$ent_pc = proj_quantiles[2, , 25]
+d2$upper = proj_quantiles[3, , 25]
+
+d3 <- data.frame(year = proj_years)
+d3$state = states[36]
+d3$lower = proj_quantiles[1, , 36]
+d3$ent_pc = proj_quantiles[2, , 36]
+d3$upper = proj_quantiles[3, , 36]
+
+d4 <- data.frame(year = proj_years)
+d4$state = states[44]
+d4$lower = proj_quantiles[1, , 44]
+d4$ent_pc = proj_quantiles[2, , 44]
+d4$upper = proj_quantiles[3, , 44]
+
+d_proj_14 <- rbind(d1, d2, d3, d4)
+
+d14 <- d|>
+  filter(state %in% states[c(5,25,36,44)])
+
+ggplot(d14, aes(x=year, y =ent_pc))+
+  geom_line(data = d14, mapping = aes(x=year, y=ent_pc, color = state))+
+  geom_line(data = d_proj_14, mapping = aes(x=year, y=ent_pc, color = state))+
+  geom_ribbon(data = d_proj_14, mapping = aes(y = ent_pc, ymin = lower, ymax = upper, fill = state), alpha = 0.3)+
+  theme_bw()+
+  labs(y = "log(entries per capita)")
+```
+
+It is hard to see how well the projection is with this scale. So we take log(ent_pc) instead.
+
+```{r echo=FALSE}
+# then proceed as normal to get median, quantiles etc
+proj_quantiles <- array(NA, c(3, length(proj_years), length(states)))
+for(i in 1:length(proj_years)){
+  for(j in 1:length(states)){
+proj_quantiles[, i, j] <- quantile(y_proj[, i, j], probs = c(0.025, 0.5, 0.975))
+  }
+} 
+
+d1 <- data.frame(year = proj_years)
+d1$state = states[5]
+d1$lower = proj_quantiles[1, , 5]
+d1$log_ent_pc = proj_quantiles[2, , 5]
+d1$upper = proj_quantiles[3, , 5]
+
+d2 <- data.frame(year = proj_years)
+d2$state = states[25]
+d2$lower = proj_quantiles[1, , 25]
+d2$log_ent_pc = proj_quantiles[2, , 25]
+d2$upper = proj_quantiles[3, , 25]
+
+d3 <- data.frame(year = proj_years)
+d3$state = states[36]
+d3$lower = proj_quantiles[1, , 36]
+d3$log_ent_pc = proj_quantiles[2, , 36]
+d3$upper = proj_quantiles[3, , 36]
+
+d4 <- data.frame(year = proj_years)
+d4$state = states[44]
+d4$lower = proj_quantiles[1, , 44]
+d4$log_ent_pc = proj_quantiles[2, , 44]
+d4$upper = proj_quantiles[3, , 44]
+
+d_proj_14 <- rbind(d1, d2, d3, d4)
+
+d14 <- d|>
+  mutate(log_ent_pc = log(ent_pc))|>
+  filter(state %in% states[c(5,25,36,44)])
+
+ggplot(d14, aes(x=year, y =log_ent_pc))+
+  geom_line(data = d14, mapping = aes(x=year, y=log_ent_pc, color = state))+
+  geom_line(data = d_proj_14, mapping = aes(x=year, y=log_ent_pc, color = state))+
+  geom_ribbon(data = d_proj_14, mapping = aes(y = log_ent_pc, ymin = lower, ymax = upper, fill = state), alpha = 0.3)+
+  theme_bw()+
+  labs(y = "log(entries per capita)")
+```
+
+
+
+## Question 4 (bonus)
+
+P-Splines are quite useful in structural time series models, when you are using a model of the form 
+$$
+f(y_t) = \text{systematic part} + \text{time-specific deviations}
+$$
+where the systematic part is model with a set of covariates for example, and P-splines are used to smooth data-driven deviations over time. Consider adding covariates to the model you ran above. What are some potential issues that may happen in estimation? Can you think of an additional constraint to add to the model that would overcome these issues?
+
